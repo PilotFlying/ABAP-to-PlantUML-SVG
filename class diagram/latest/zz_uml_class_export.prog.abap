@@ -1,26 +1,40 @@
 *&---------------------------------------------------------------------*
 "! UML Class PlantUML exporter (inspired by program UML_CLASS_DIAGRAM)
 "! Installation of JNET is not required.
+"!
+"! Forked from https://github.com/nomssi/ABAP-to-PlantUML
+"!
+"! Delta:
+"!  - Display programs, table types, and data elements (all still linked to a class, to be traversed by CL_UML_CLASS_SCANNER)
+"!  - Selection screen option to omit traversal of standard SAP-package objects
+"!  - Modified UML relation symbols with additional labels
+"!  - Default plantUML service to svg image type (bypasses png truncation of large diagrams and allows for in-place browser zoom)
+"!  - Display HTML using GUI window as container (full screen view possible)
+"! Notes:
+"!  - CTRL-mouse roller works in GUI for zooming on the plantUML vector graphics (no loss of detail, as opposed to png)
+"!  - GUI "Save image as" defaults to ".png" but allows changing the extension to the correct ".svg"
 REPORT zz_uml_class_export.
 
 *NAME     TEXT
 *SO_DEVC  Package
-*SO_ROOT  Object Name
-*X_AGGR    Aggregations (<>--)
-*X_ASOS    Associations (-->)
-*X_ATTR    List Attributes
-*X_CONS    Display Constants
+*X_AGGR   Aggregations (<>--)
+*X_ASOS   Associations (-->)
 *X_EXCEP  Exceptions (<<throws>>)
 *X_FRND   Friends
+*X_USES   Dependency (<<uses>>)
 *X_FUGR    Analyze Function Groups
 *X_LOCL    Analyze Local Objects
 *X_METH    List Methods
-*X_PACKS  Package Member (~)
+*X_ATTR    List Attributes
+*X_CONS    Display Constants
+*X_PACKS   Package Member (~)
 *X_PRIV    Private Member  (-)
 *X_PROG    Analyze Program
 *X_PROT    Protected Member (#)
-*X_STRUCT  Structures  (<<data Type>>)
-*X_USES    Dependency (<<uses>>)
+*X_STRUCT  Structured Type Components
+*X_TYPES   Table Types (Dictionary or Local), Views
+*X_DTEL    Data elements
+*P_CPONLY  Customer/Local Objects Only
 
 *SYMBOL  TEXT
 *007  Primary Selection Set
@@ -50,6 +64,7 @@ SELECTION-SCREEN BEGIN OF SCREEN 510 AS SUBSCREEN.
 SELECTION-SCREEN BEGIN OF BLOCK s1 WITH FRAME TITLE TEXT-sc1.
 SELECT-OPTIONS: so_root  FOR gs_tadir-obj_name,  " root objects
                 so_devc  FOR gs_tadir-devclass.  " root objects dev-class
+PARAMETERS p_cponly TYPE abap_bool DEFAULT abap_true AS CHECKBOX. "Traverse Customer/Local Objects Only
 SELECTION-SCREEN END OF BLOCK s1.
 SELECTION-SCREEN END OF SCREEN 510.
 
@@ -59,7 +74,9 @@ SELECTION-SCREEN BEGIN OF BLOCK b0 WITH FRAME TITLE TEXT-sc7.
 PARAMETERS: x_locl   TYPE flag AS CHECKBOX DEFAULT 'X',
             x_prog   TYPE flag AS CHECKBOX DEFAULT 'X',
             x_fugr   TYPE flag AS CHECKBOX DEFAULT 'X',
-            x_struct TYPE flag AS CHECKBOX DEFAULT ' '.
+            x_struct TYPE flag AS CHECKBOX DEFAULT abap_true,
+            x_types  TYPE abap_bool AS CHECKBOX DEFAULT abap_false,
+            x_dtel   TYPE abap_bool AS CHECKBOX DEFAULT abap_false.
 SELECTION-SCREEN END OF BLOCK b0.
 SELECTION-SCREEN END OF SCREEN 520.
 
@@ -72,11 +89,12 @@ PARAMETERS: x_priv  TYPE flag AS CHECKBOX DEFAULT 'X',
             x_attr  TYPE flag AS CHECKBOX DEFAULT 'X',
             x_cons  TYPE flag AS CHECKBOX DEFAULT 'X',
             x_meth  TYPE flag AS CHECKBOX DEFAULT 'X',
-            x_uses  TYPE flag AS CHECKBOX DEFAULT ' ',
+            x_uses  TYPE flag AS CHECKBOX DEFAULT abap_true,
             x_frnd  TYPE flag AS CHECKBOX DEFAULT 'X',
-            x_excep TYPE flag AS CHECKBOX DEFAULT ' ',
-            x_asos  TYPE flag AS CHECKBOX DEFAULT ' ',
-            x_aggr  TYPE flag AS CHECKBOX DEFAULT ' '.
+            x_excep TYPE flag AS CHECKBOX DEFAULT abap_true,
+            x_asos  TYPE flag AS CHECKBOX DEFAULT abap_true,
+            x_aggr  TYPE flag AS CHECKBOX DEFAULT abap_true,
+            x_deep  TYPE abap_bool NO-DISPLAY DEFAULT abap_false.
 SELECTION-SCREEN END OF BLOCK b1.
 SELECTION-SCREEN END OF SCREEN 530.
 
@@ -104,11 +122,12 @@ TYPES: BEGIN OF ts_scan_config,
          scan_function_groups TYPE flag,
          add_structures       TYPE flag,
          scan_used_types      TYPE flag,
+         scan_deep            TYPE abap_bool,
        END OF ts_scan_config.
 
 
 TYPES tv_scale TYPE perct.
-CONSTANTS c_default_scale TYPE tv_scale VALUE '0.6'.
+CONSTANTS c_default_scale TYPE tv_scale VALUE '1.0'.
 TYPES: BEGIN OF ts_diagram_config,
          local_path     TYPE string,
          java_jar       TYPE string,
@@ -171,7 +190,7 @@ ENDCLASS.
 * Abstract UML code generator
 CLASS lcl_uml DEFINITION FRIENDS lif_unit_test.
   PUBLIC SECTION.
-    CLASS-METHODS new IMPORTING is_config TYPE ts_diagram_config
+    CLASS-METHODS new IMPORTING is_config     TYPE ts_diagram_config
                       RETURNING VALUE(ro_uml) TYPE REF TO lcl_uml.
 
     METHODS add IMPORTING iv_code TYPE string.
@@ -205,7 +224,7 @@ CLASS lcl_uml_class DEFINITION FRIENDS lif_unit_test.
                 iv_class      TYPE xsdboolean
                 iv_name       TYPE csequence.
     METHODS uml_reduce IMPORTING it_data   TYPE STANDARD TABLE
-                                 iv_sep    TYPE char3
+                                 iv_sep    TYPE char4
                                  iv_suffix TYPE csequence OPTIONAL
                                  iv_active TYPE xsdboolean DEFAULT abap_true.
     METHODS begin_class RETURNING VALUE(rv_flag) TYPE flag.
@@ -239,9 +258,9 @@ CLASS lcl_class_diagram DEFINITION CREATE PRIVATE FRIENDS lif_unit_test.
     TYPES tt_uml TYPE STANDARD TABLE OF cl_uml_class_scanner=>uml_line WITH KEY name.
 
     CLASS-METHODS generate
-      IMPORTING it_uml         TYPE tt_uml
-                io_parameter   TYPE REF TO lcl_parameter
-                is_diagram_cfg TYPE ts_diagram_config
+      IMPORTING it_uml            TYPE tt_uml
+                io_parameter      TYPE REF TO lcl_parameter
+                is_diagram_cfg    TYPE ts_diagram_config
       RETURNING VALUE(rv_diagram) TYPE string.
 
   PRIVATE SECTION.
@@ -249,7 +268,7 @@ CLASS lcl_class_diagram DEFINITION CREATE PRIVATE FRIENDS lif_unit_test.
     DATA mo_class TYPE REF TO lcl_uml_class.
 
     METHODS constructor IMPORTING is_diagram_cfg TYPE ts_diagram_config
-                                  io_parameter TYPE REF TO lcl_parameter.
+                                  io_parameter   TYPE REF TO lcl_parameter.
 
     METHODS to_uml_text IMPORTING it_uml            TYPE tt_uml
                         RETURNING VALUE(rv_diagram) TYPE string.
@@ -302,7 +321,8 @@ ENDCLASS.
 CLASS lcl_plant_uml DEFINITION FRIENDS lif_unit_test.
   PUBLIC SECTION.
     CONSTANTS c_plantuml_server TYPE string
-      VALUE 'http://www.plantuml.com/plantuml/img/'  ##NO_TEXT.
+*      VALUE 'http://www.plantuml.com/plantuml/img/'  ##NO_TEXT.
+       VALUE 'http://www.plantuml.com/plantuml/svg/'  ##NO_TEXT.
 
     METHODS constructor IMPORTING iv_diagram TYPE string.
     METHODS to_url IMPORTING iv_base_url   TYPE string DEFAULT c_plantuml_server
@@ -322,9 +342,10 @@ CLASS lcl_plant_uml DEFINITION FRIENDS lif_unit_test.
     METHODS source IMPORTING iv_display_source TYPE flag
                    RETURNING VALUE(rv_source)  TYPE string.
 
-    METHODS png_file_name IMPORTING io_name        TYPE REF TO lcl_file_name
-                                    is_cfg         TYPE ts_diagram_config
-                          RETURNING VALUE(rv_name) TYPE string.
+    METHODS file_name IMPORTING io_name        TYPE REF TO lcl_file_name
+                                iv_extension   TYPE string DEFAULT `.png`
+                                is_cfg         TYPE ts_diagram_config
+                      RETURNING VALUE(rv_name) TYPE string.
 
     METHODS parameter_string IMPORTING io_name         TYPE REF TO lcl_file_name
                                        is_cfg          TYPE ts_diagram_config
@@ -419,9 +440,9 @@ CLASS lcl_configuration DEFINITION CREATE PRIVATE FRIENDS lif_unit_test.
           mv_mode_txt TYPE flag.
     METHODS dialog.
     CLASS-METHODS get_java_path RETURNING VALUE(rv_fullpath) TYPE string.
-    CLASS-METHODS get_registry_value IMPORTING iv_key TYPE string
-                                               iv_value TYPE string
-                                     EXPORTING ev_subrc TYPE sysubrc
+    CLASS-METHODS get_registry_value IMPORTING iv_key          TYPE string
+                                               iv_value        TYPE string
+                                     EXPORTING ev_subrc        TYPE sysubrc
                                      RETURNING VALUE(rv_value) TYPE string.
 ENDCLASS.
 
@@ -461,12 +482,12 @@ CLASS lcl_parameter IMPLEMENTATION.
                        private_member   = get_boolean( 'X_PRIV' )
                        protected_member = get_boolean( 'X_PROT' )
                        packaged_member  = get_boolean( 'X_PACKS' )
-
                        scan_local_types = get_boolean( 'X_LOCL' )
                        scan_programs    = get_boolean( 'X_PROG' )
                        scan_function_groups = get_boolean( 'X_FUGR' )
                        add_structures   = get_boolean( 'X_STRUCT' )
-                       scan_used_types  = get_boolean( 'X_USES' ) ).
+                       scan_used_types  = get_boolean( 'X_USES' )
+                       scan_deep = get_boolean( 'X_DEEP' ) ).
   ENDMETHOD.
 
   METHOD get_display_config.
@@ -513,7 +534,8 @@ CLASS lcl_scanner IMPLEMENTATION.
                                scan_programs = ls_scan-scan_programs
                                scan_function_groups = ls_scan-scan_function_groups
                                add_structures = ls_scan-add_structures
-                               scan_used_types = ls_scan-scan_used_types ).
+                               scan_used_types = ls_scan-scan_used_types
+                               scan_deep = ls_scan-scan_deep ).
   ENDMETHOD.
 
   METHOD class_scan.
@@ -527,9 +549,11 @@ CLASS lcl_scanner IMPLEMENTATION.
     rv_objects_selected = abap_true.
 
     execute( scan_packages = lt_packages
-             scan_types = lt_objects ).
+             scan_types = lt_objects
+*             shrink =
+*             detailed =
+    ).
   ENDMETHOD.                    "lif_parameter~uml_class_scan
-
 ENDCLASS.
 
 *----------------------------------------------------------------------*
@@ -632,14 +656,16 @@ CLASS lcl_plant_uml IMPLEMENTATION.
   METHOD show_html.
     cl_abap_browser=>show_html( html_string = iv_html
                                 size = iv_size
-                                context_menu = abap_true ).
+                                context_menu = abap_true
+                                dialog = abap_false
+                                container = cl_gui_container=>default_screen
+                                modal = abap_false ).
   ENDMETHOD.
 
   METHOD output.
     CASE is_cfg-output_mode.
       WHEN lcl_configuration=>c_mode_url.
         show_html( |<img src="{ to_url( ) }"/>\n{ source( is_cfg-display_source ) }| ).
-
       WHEN lcl_configuration=>c_mode_exe.
         DATA(lo_name) = lcl_file_name=>new( lcl_file=>c_mode_txt ).
         IF lcl_file=>download( iv_data = to_xstring( mv_diagram )
@@ -680,9 +706,9 @@ CLASS lcl_plant_uml IMPLEMENTATION.
     rv_param = |-jar { is_cfg-java_jar } -o { is_cfg-local_path } "{ io_name->get_fullpath( ) }"|.
   ENDMETHOD.
 
-  METHOD png_file_name.
+  METHOD file_name.
     TRY.
-        rv_name = |{ is_cfg-local_path }{ io_name->get_prefix( ) }.png|.
+        rv_name = |{ is_cfg-local_path }{ io_name->get_prefix( ) }{ iv_extension }|.
       CATCH cx_dynamic_check.
         CLEAR rv_name.
     ENDTRY.
@@ -697,7 +723,7 @@ CLASS lcl_plant_uml IMPLEMENTATION.
                 synchronous = 'X'
       EXCEPTIONS OTHERS = 1 ).
     CHECK sy-subrc EQ 0.
-    rv_name = png_file_name( io_name = io_name
+    rv_name = file_name( io_name = io_name
                              is_cfg = is_cfg ).
   ENDMETHOD.
 
@@ -724,7 +750,14 @@ CLASS lcl_uml_class IMPLEMENTATION.
   ENDMETHOD.                    "constructor
 
   METHOD to_uml_text.
-    CHECK is_uml-kind CA 'OFP'.
+    CHECK is_uml-kind CA 'OFPRS'.
+*   See CL_UML_CLASS_SCANNER->get_diagram( )
+    IF x_dtel = abap_false AND is_uml-kind = 'R'. " 'DTEL'
+      RETURN.
+    ENDIF.
+    IF x_types = abap_false AND is_uml-kind = 'S'. " 'VIEW','TTYP','TABL'
+      RETURN.
+    ENDIF.
     set_data( is_uml ).
     plant_uml_class( ).
   ENDMETHOD.                    "to_uml_text
@@ -760,23 +793,38 @@ CLASS lcl_uml_class IMPLEMENTATION.
     ENDIF.
 
     uml_reduce( it_data = ms_uml-t_implementations
-                iv_sep = '-->' ).
+                iv_sep = '..|>' ).
     uml_reduce( it_data = ms_uml-t_user
-                iv_sep = '..o'
+                iv_sep = '<..'
+                iv_suffix = | : uses < |
                 iv_active = ms_uml_cfg-show_uses ).
     uml_reduce( it_data = ms_uml-t_exceptions
-                iv_sep = '..'
+                iv_sep = '..>'
+                iv_suffix = | : throws > |
                 iv_active = ms_uml_cfg-show_throws ).
     uml_reduce( it_data = ms_uml-t_friends
-                iv_sep = '..>'
-                iv_suffix = | : friend |
+                iv_sep = '-->'
+                iv_suffix = | : friend > |
                 iv_active = ms_uml_cfg-show_friends ).
+    IF ms_uml-container IS NOT INITIAL AND ms_uml-is_local EQ abap_true.
+      uml_reduce( it_data = VALUE cl_uml_class_scanner=>uml_string_tab( ( ms_uml-container ) )
+                  iv_sep = '--o'
+                  iv_suffix = | : contains < |
+                  iv_active = ms_uml_cfg-show_uses ).
+    ENDIF.
   ENDMETHOD.                    "plant_uml_class
 
   METHOD get_name.
-    rv_name = substring_after( val = iv_name regex = '\\(CLASS|INTERFACE)=' ).
-    CHECK rv_name IS INITIAL.
-    rv_name = substring_after( val = iv_name regex = '\\FUGR=' ).
+    TYPES tt_regex_to_try TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+    DATA(lt_regex_to_try) = VALUE tt_regex_to_try( ( `\\(CLASS|INTERFACE)=` ) ( `\\FUGR=` ) ( `\\PROGRAM=` ) ( `\\TYPE=` ) ).
+    LOOP AT lt_regex_to_try ASSIGNING FIELD-SYMBOL(<r>).
+      rv_name = substring_after( val = iv_name regex = <r> ).
+      IF rv_name IS NOT INITIAL.
+        REPLACE ALL OCCURRENCES OF 'TYPE=' IN rv_name WITH ``.
+        REPLACE ALL OCCURRENCES OF '=' IN rv_name WITH '_'.    "Avoid PlantUML syntax error
+        EXIT.
+      ENDIF.
+    ENDLOOP.
   ENDMETHOD.                    "get_name
 
   METHOD get_container.
@@ -788,8 +836,19 @@ CLASS lcl_uml_class IMPLEMENTATION.
     CLEAR rv_class.
     IF find( val = ms_uml-name sub = '\FUGR=' ) GE 0.
       IF ms_scan_cfg-scan_function_groups EQ abap_true.
-        rv_class = |class { mv_name } << (F,#FF7700) FuGr >>|.
+        rv_class = |class { mv_name } << (F,#FF7700) FUGR >>|.
       ENDIF.
+    ELSEIF find( val = ms_uml-name sub = '\PROGRAM=' ) GE 0 AND find( val = ms_uml-name regex = '\\(CLASS|INTERFACE)=' ) = -1.
+      rv_class = |class { mv_name } << (P,#119900) PROG >>|.
+    ELSEIF find( val = ms_uml-name sub = '\TYPE=' ) GE 0.
+      CASE ms_uml-kind.
+        WHEN 'S'.
+          rv_class = |class { mv_name } << (T,#8899AA) TYPE >>|.
+        WHEN 'R'.
+          rv_class = |class { mv_name } << (D,#AABBCC) DTEL >>|.
+        WHEN OTHERS.
+          MESSAGE |Unexpected CL_UML_CLASS_SCANNER uml_subtype-kind: '{ ms_uml-kind }'| TYPE 'A'.
+      ENDCASE.
     ELSE.
       IF find( val = ms_uml-name sub = '\INTERFACE=' ) GE 0.
         lv_prefix = |interface|.
@@ -991,17 +1050,33 @@ CLASS lcl_plantuml_output IMPLEMENTATION.
     DATA(lo_scanner) = NEW lcl_scanner( io_parameter ).
 
     CHECK lo_scanner->class_scan( ).
-    lo_scanner->get_diagram( CHANGING c_data = lr_data ).
     TRY.
+        lo_scanner->get_diagram( CHANGING c_data = lr_data ).
         lr_uml_tab ?= lr_data.
-        CHECK lr_uml_tab IS BOUND.
+        IF lr_uml_tab IS NOT BOUND.
+          RETURN.
+        ENDIF.
+        IF p_cponly = abap_true.
+          DELETE lr_uml_tab->* WHERE package NP 'Z*' AND package NP 'Y*' AND package NP '$*'.
+        ENDIF.
+        IF lr_uml_tab IS INITIAL.
+          RETURN.
+        ENDIF.
         DATA(ls_cfg) = lcl_configuration=>get( ).
         NEW lcl_plant_uml( lcl_class_diagram=>generate( it_uml = lr_uml_tab->*
                                                         io_parameter = io_parameter
                                                         is_diagram_cfg = ls_cfg )
                                                          )->output( ls_cfg ).
         rv_flag = abap_true.
-      CATCH cx_dynamic_check.                           "#EC NO_HANDLER
+      CATCH cx_root INTO DATA(lo_exc).
+        lo_exc->get_source_position(
+          IMPORTING
+            program_name = DATA(lv_program_name)
+            include_name = DATA(lv_include_name)
+            source_line  = DATA(lv_source_line)
+        ).
+        MESSAGE |'{ lo_exc->get_text( ) }' in line { lv_source_line } of { lv_include_name }| TYPE 'I'.
+        LEAVE PROGRAM.
     ENDTRY.
   ENDMETHOD.                    "lif_output~output
 
@@ -1021,12 +1096,13 @@ CLASS lcl_configuration IMPLEMENTATION.
     gs_cfg = VALUE #( java_appl = get_java_path( )
                       local_path = `C:\Temp\Dokumente\UML\`                           " PlantUML jar file and output path
                       java_jar = `C:\Temp\Dokumente\UML\plantuml.jar`
-                      server_url = `http://www.plantuml.com/plantuml/img/` ##NO_TEXT  " PlantUML server URL
+*                      server_url = `http://www.plantuml.com/plantuml/img/` ##NO_TEXT  " PlantUML server URL
+                      server_url = `http://www.plantuml.com/plantuml/svg/` ##NO_TEXT  " PlantUML server URL
                       output_mode = c_mode_url
                       skip_dialog = space
                       scale = c_default_scale
-                      shadowing = abap_false
-                      display_source = abap_true
+                      shadowing = abap_true
+                      display_source = abap_false
                       hpages = 1
                       vpages = 1 ).
   ENDMETHOD.
@@ -1130,7 +1206,7 @@ CLASS lcl_export IMPLEMENTATION.
     button2 = TEXT-008.
     button3 = TEXT-009.
 *   pushbutton in the application toolbar
-    sscrfields-functxt_01 = VALUE smp_dyntxt( icon_id = '@4Y@'        " ICON_BUSINAV_ENTITY
+    sscrfields-functxt_01 = VALUE smp_dyntxt( icon_id = icon_document        " ICON_BUSINAV_ENTITY
                                               icon_text = TEXT-p01    " PlantUML
                                               quickinfo = TEXT-p01
                                               text = TEXT-p01 ).
@@ -1154,8 +1230,8 @@ CLASS lcl_export IMPLEMENTATION.
   METHOD output.
     DATA li_export TYPE REF TO lif_output.
 
-    li_export = SWITCH #( iv_ucomm WHEN 'FC01' THEN NEW lcl_plantuml_output( )
-                                   WHEN 'ONLI' THEN NEW lcl_xmi_output( )
+    li_export = SWITCH #( iv_ucomm WHEN 'ONLI' THEN NEW lcl_plantuml_output( )
+                                   WHEN 'FC01' THEN NEW lcl_xmi_output( )
                                    ELSE NEW lcl_null_output( ) ).
     rv_flag = li_export->output( NEW lcl_parameter( ) ).
   ENDMETHOD.
